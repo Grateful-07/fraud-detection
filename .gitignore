@@ -1,0 +1,16 @@
+@
+# Data files & Binary artifacts
+data/
+models/
+
+# Python environments & Caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# IDE local configuration
+.ipynb_checkpoints/
+.vscode/
+@

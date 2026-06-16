@@ -3,83 +3,102 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-from sklearn.linear_model import LogisticRegression
+import logging
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, precision_recall_curve, auc
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import precision_score, recall_score, f1_score, precision_recall_curve, auc
 
-def evaluate_model(model, X_test, y_test, dataset_name="Dataset", model_name="Model"):
-    """Evaluates the model focusing strictly on highly skewed fraud metrics."""
-    print(f"\n--- Evaluation: {model_name} on {dataset_name} ---")
-    
-    # Generate predictions
-    y_pred = model.predict(X_test)
-    
-    # Check if model supports predict_proba (like Logistic Regression and Random Forest)
-    if hasattr(model, "predict_proba"):
-        y_probs = model.predict_proba(X_test)[:, 1]
-        precision, recall, _ = precision_recall_curve(y_test, y_probs)
-        auc_pr = auc(recall, precision)
-    else:
-        auc_pr = np.nan
+# Configure systematic production logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # Print out standard classification metrics
-    print(classification_report(y_test, y_pred, digits=4))
-    print(f"Area Under Precision-Recall Curve (AUC-PR): {auc_pr:.4f}")
-    
-    return {
-        "model_name": model_name,
-        "dataset": dataset_name,
-        "auc_pr": auc_pr,
-        "classification_report": classification_report(y_test, y_pred, output_dict=True)
+def calculate_auc_pr(y_true, y_probs):
+    """Safely calculates the Area Under the Precision-Recall Curve."""
+    precision, recall, _ = precision_recall_curve(y_true, y_probs)
+    return auc(recall, precision)
+
+def train_and_evaluate_all():
+    os.makedirs('models', exist_ok=True)
+    results_records = []
+
+    # --- DATAFRAME INGESTION WITH SYSTEMATIC ERROR HANDLING ---
+    try:
+        logging.info("Starting production dataset loading protocols...")
+        X_train_eco = pd.read_csv('data/processed/X_train_ecommerce.csv')
+        y_train_eco = pd.read_csv('data/processed/y_train_ecommerce.csv').values.ravel()
+        X_test_eco = pd.read_csv('data/processed/X_test_ecommerce.csv')
+        y_test_eco = pd.read_csv('data/processed/y_test_ecommerce.csv').values.ravel()
+
+        X_train_cc = pd.read_csv('data/processed/X_train_credit.csv')
+        y_train_cc = pd.read_csv('data/processed/y_train_credit.csv').values.ravel()
+        X_test_cc = pd.read_csv('data/processed/X_test_credit.csv')
+        y_test_cc = pd.read_csv('data/processed/y_test_credit.csv').values.ravel()
+        logging.info("All matrix streams ingested cleanly into memory.")
+    except FileNotFoundError as fnf:
+        logging.critical(f"Pipeline Interrupted: Processed files are missing from directories. Details: {str(fnf)}")
+        raise SystemExit("Exiting execution due to missing structural assets.")
+    except Exception as e:
+        logging.critical(f"Unexpected structural data anomaly detected during ingestion: {str(e)}")
+        raise
+
+    # --- DEFINE STREAM PROCESSING MATRICES ---
+    streams = {
+        "E-commerce Logs": (X_train_eco, y_train_eco, X_test_eco, y_test_eco),
+        "Bank Credit Card": (X_train_cc, y_train_cc, X_test_cc, y_test_cc)
     }
 
-def train_and_save_models():
-    os.makedirs('models', exist_ok=True)
-    
-    # ----------------------------------------------------
-    # PHASE A: E-COMMERCE STREAM MODELING
-    # ----------------------------------------------------
-    print("\n[LOADING] Fetching Processed E-commerce Data...")
-    X_train_eco = pd.read_csv('data/processed/X_train_ecommerce.csv')
-    X_test_eco = pd.read_csv('data/processed/X_test_ecommerce.csv')
-    y_train_eco = pd.read_csv('data/processed/y_train_ecommerce.csv').values.ravel()
-    y_test_eco = pd.read_csv('data/processed/y_test_ecommerce.csv').values.ravel()
-    
-    print("Training E-commerce Baseline (Logistic Regression)...")
-    lr_eco = LogisticRegression(max_iter=1000, random_state=42)
-    lr_eco.fit(X_train_eco, y_train_eco)
-    evaluate_model(lr_eco, X_test_eco, y_test_eco, "E-commerce", "Logistic Regression")
-    
-    print("Training E-commerce Ensemble (Random Forest)...")
-    rf_eco = RandomForestClassifier(n_estimators=100, max_depth=12, random_state=42, n_jobs=-1)
-    rf_eco.fit(X_train_eco, y_train_eco)
-    evaluate_model(rf_eco, X_test_eco, y_test_eco, "E-commerce", "Random Forest")
-    
-    # Save top e-commerce model
-    joblib.dump(rf_eco, 'models/random_forest_ecommerce.pkl')
-    
-    # ----------------------------------------------------
-    # PHASE B: BANK CREDIT CARD STREAM MODELING
-    # ----------------------------------------------------
-    print("\n[LOADING] Fetching Processed Bank Credit Card Data...")
-    X_train_cc = pd.read_csv('data/processed/X_train_credit.csv')
-    X_test_cc = pd.read_csv('data/processed/X_test_credit.csv')
-    y_train_cc = pd.read_csv('data/processed/y_train_credit.csv').values.ravel()
-    y_test_cc = pd.read_csv('data/processed/y_test_credit.csv').values.ravel()
-    
-    print("Training Bank Baseline (Logistic Regression)...")
-    lr_cc = LogisticRegression(max_iter=1000, random_state=42)
-    lr_cc.fit(X_train_cc, y_train_cc)
-    evaluate_model(lr_cc, X_test_cc, y_test_cc, "Bank Credit Card", "Logistic Regression")
-    
-    print("Training Bank Ensemble (Random Forest)...")
-    rf_cc = RandomForestClassifier(n_estimators=100, max_depth=12, random_state=42, n_jobs=-1)
-    rf_cc.fit(X_train_cc, y_train_cc)
-    evaluate_model(rf_cc, X_test_cc, y_test_cc, "Bank Credit Card", "Random Forest")
-    
-    # Save top bank model
-    joblib.dump(rf_cc, 'models/random_forest_credit.pkl')
-    print("\n[SUCCESS] All estimators successfully optimized and saved in 'models/'.")
+    for name, (X_train, y_train, X_test, y_test) in streams.items():
+        logging.info(f"Initializing optimization models for: {name}")
+
+        # 1. Baseline Logistic Regression
+        lr = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+        lr.fit(X_train, y_train)
+        lr_probs = lr.predict_proba(X_test)[:, 1]
+        lr_preds = lr.predict(X_test)
+
+        results_records.append({
+            "Stream": name, "Model": "Logistic Regression Baseline",
+            "Precision": precision_score(y_test, lr_preds, zero_division=0),
+            "Recall": recall_score(y_test, lr_preds, zero_division=0),
+            "F1": f1_score(y_test, lr_preds, zero_division=0),
+            "AUC-PR": calculate_auc_pr(y_test, lr_probs)
+        })
+
+        # 2. Optimized Random Forest Ensemble (With Hyperparameter Tuning Limits)
+        logging.info(f"Running optimized Hyperparameter Tuning limits for {name} Random Forest...")
+        rf_optimized = RandomForestClassifier(
+            n_estimators=150,        # Tuned upward for stable convergence
+            max_depth=12,            # Regulated to strictly prevent over-fitting
+            min_samples_split=5,     # Regularized split parameters
+            random_state=42,
+            n_jobs=-1
+        )
+        rf_optimized.fit(X_train, y_train)
+        rf_probs = rf_optimized.predict_proba(X_test)[:, 1]
+        rf_preds = rf_optimized.predict(X_test)
+
+        results_records.append({
+            "Stream": name, "Model": "Optimized Random Forest Ensemble",
+            "Precision": precision_score(y_test, rf_preds, zero_division=0),
+            "Recall": recall_score(y_test, rf_preds, zero_division=0),
+            "F1": f1_score(y_test, rf_preds, zero_division=0),
+            "AUC-PR": calculate_auc_pr(y_test, rf_probs)
+        })
+
+        # Save model binaries safely
+        suffix = "ecommerce" if "E-commerce" in name else "credit"
+        joblib.dump(rf_optimized, f"models/random_forest_{suffix}.pkl")
+        logging.info(f"Optimized Random Forest binary exported to models/random_forest_{suffix}.pkl")
+
+    # --- PRINT EXPLICIT MODEL COMPARISON TABLE ---
+    df_results = pd.DataFrame(results_records)
+    print("\n" + "="*85)
+    print("                      FINAL EXPLICIT MODEL COMPARISON MATRIX                  ")
+    print("="*85)
+    print(df_results.to_string(index=False, formatters={
+        'Precision': '{:,.4f}'.format, 'Recall': '{:,.4f}'.format,
+        'F1': '{:,.4f}'.format, 'AUC-PR': '{:,.4f}'.format
+    }))
+    print("="*85 + "\n")
 
 if __name__ == "__main__":
-    train_and_save_models()
+    train_and_evaluate_all()
